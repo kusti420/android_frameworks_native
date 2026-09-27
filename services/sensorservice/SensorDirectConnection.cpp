@@ -182,6 +182,16 @@ int32_t SensorService::SensorDirectConnection::configureChannel(int handle, int 
         return PERMISSION_DENIED;
     }
 
+    // IchthysOS: direct channels bypass the event path and with it the fingerprinting-protection
+    // quantization, so protected apps can't use them for motion/pressure or uncalibrated
+    // sensors (their sensor list reports no direct channel support). (ichthysos-tracker#30)
+    if (rateLevel != SENSOR_DIRECT_RATE_STOP &&
+            (SensorService::isSensorFingerprintHidden(s.getType()) ||
+             SensorService::isSensorFingerprintPerturbed(s.getType())) &&
+            mService->isFingerprintProtectedUid(mUid)) {
+        return PERMISSION_DENIED;
+    }
+
     if (s.getHighestDirectReportRateLevel() == 0
             || rateLevel > s.getHighestDirectReportRateLevel()
             || !s.isDirectChannelTypeSupported(mMem.type)) {

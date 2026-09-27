@@ -15,8 +15,12 @@
  */
 
 #include <log/log.h>
+#include <stdlib.h>
 #include <sys/socket.h>
 #include <utils/threads.h>
+
+#include <algorithm>
+#include <cmath>
 
 #include <android/util/ProtoOutputStream.h>
 #include <frameworks/base/core/proto/android/service/sensor_service.proto.h>
@@ -398,6 +402,17 @@ status_t SensorService::SensorEventConnection::sendEvents(
         }
     }
 
+    // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30).
+    if (count > 0 && mService->isFingerprintProtectedUid(mUid)) {
+        if (scratch == buffer) {
+            // scratch aliases the input shared by every connection; harden a private copy.
+            sanitizedBuffer.reset(new sensors_event_t[count]);
+            std::copy(buffer, buffer + count, sanitizedBuffer.get());
+            scratch = sanitizedBuffer.get();
+        }
+        count = hardenEventsForFingerprintingLocked(scratch, count);
+    }
+
     sendPendingFlushEventsLocked();
     // Early return if there are no events for this connection.
     if (count == 0) {
@@ -464,6 +479,44 @@ status_t SensorService::SensorEventConnection::sendEvents(
 #endif
 
     return size < 0 ? status_t(size) : status_t(NO_ERROR);
+}
+
+int SensorService::SensorEventConnection::hardenEventsForFingerprintingLocked(
+        sensors_event_t* events, int count) {
+    // Events closer together than this were produced for a faster client of the same sensor
+    // (the HAL runs at the fastest requested rate); drop them to keep this app at 50 Hz.
+    constexpr int64_t kMinSpacingNs = ICHTHYS_FP_SAMPLING_PERIOD_NS * 9 / 10;
+    int out = 0;
+    for (int i = 0; i < count; i++) {
+        sensors_event_t& e = events[i];
+        float quantum, maxOffset;
+        int axes;
+        if (e.type == SENSOR_TYPE_META_DATA ||
+                !SensorService::getFingerprintQuantization(e.type, &quantum, &maxOffset, &axes)) {
+            events[out++] = e;
+            continue;
+        }
+        int64_t& last = mFingerprintLastTimestamp[e.sensor];
+        if (last != 0 && e.timestamp >= last && e.timestamp - last < kMinSpacingNs) {
+            continue;
+        }
+        last = e.timestamp;
+        auto offsets = mFingerprintOffsets.find(e.sensor);
+        if (offsets == mFingerprintOffsets.end()) {
+            std::array<float, 3> generated;
+            for (float& offset : generated) {
+                const float unit =
+                        static_cast<float>(arc4random()) / static_cast<float>(UINT32_MAX);
+                offset = (unit * 2.0f - 1.0f) * maxOffset;
+            }
+            offsets = mFingerprintOffsets.emplace(e.sensor, generated).first;
+        }
+        for (int axis = 0; axis < axes; axis++) {
+            e.data[axis] = std::round((e.data[axis] + offsets->second[axis]) / quantum) * quantum;
+        }
+        events[out++] = e;
+    }
+    return out;
 }
 
 bool SensorService::SensorEventConnection::hasSensorAccess() {
@@ -725,6 +778,17 @@ status_t SensorService::SensorEventConnection::enableDisable(
             if (mService->isSensorInCappedSet(s.getType())) {
                 isSensorCapped = true;
             }
+            // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30).
+            if (mService->isFingerprintProtectedUid(mUid)) {
+                if (SensorService::isSensorFingerprintHidden(s.getType())) {
+                    return PERMISSION_DENIED;
+                }
+                if (SensorService::isSensorFingerprintPerturbed(s.getType()) &&
+                        samplingPeriodNs < ICHTHYS_FP_SAMPLING_PERIOD_NS) {
+                    samplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
+                    requestedSamplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
+                }
+            }
         }
         if (isSensorCapped) {
             err = mService->adjustSamplingPeriodBasedOnMicAndPermission(&samplingPeriodNs,
@@ -767,6 +831,13 @@ status_t SensorService::SensorEventConnection::setEventRate(int handle, nsecs_t 
         const Sensor& s = si->getSensor();
         if (mService->isSensorInCappedSet(s.getType())) {
             isSensorCapped = true;
+        }
+        // IchthysOS: fingerprinting protection 50 Hz cap (kusti420/ichthysos-tracker#30).
+        if (SensorService::isSensorFingerprintPerturbed(s.getType()) &&
+                samplingPeriodNs < ICHTHYS_FP_SAMPLING_PERIOD_NS &&
+                mService->isFingerprintProtectedUid(mUid)) {
+            samplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
+            requestedSamplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
         }
     }
     if (isSensorCapped) {

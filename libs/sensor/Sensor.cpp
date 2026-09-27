@@ -529,6 +529,12 @@ void Sensor::capHighestDirectReportRateLevel(int32_t cappedRateLevel) {
     }
 }
 
+void Sensor::anonymizeIdentity(const char* genericName) {
+    mName = genericName;
+    mVendor = "Android";
+    mVersion = 1;
+}
+
 size_t Sensor::getFlattenedSize() const {
     size_t fixedSize =
             sizeof(mVersion) + sizeof(mHandle) + sizeof(mType) +

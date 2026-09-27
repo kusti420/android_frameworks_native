@@ -42,6 +42,8 @@
 #include <condition_variable>
 #include <mutex>
 #include <queue>
+#include <set>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -74,6 +76,11 @@
 // Capped sampling rate level for apps that have direct sensor connections.
 // The enum SENSOR_DIRECT_RATE_NORMAL corresponds to a rate value of at most 110 Hz.
 #define SENSOR_SERVICE_CAPPED_SAMPLING_RATE_LEVEL SENSOR_DIRECT_RATE_NORMAL
+
+// IchthysOS: apps under sensor fingerprinting protection get at most 50 Hz from the motion and
+// pressure sensors (SENSOR_DELAY_GAME), regardless of HIGH_SAMPLING_RATE_SENSORS.
+// (kusti420/ichthysos-tracker#30)
+#define ICHTHYS_FP_SAMPLING_PERIOD_NS (20 * 1000 * 1000)
 
 namespace android {
 
@@ -212,6 +219,24 @@ public:
 
     // Returns true if a sensor should be throttled according to our rate-throttling rules.
     static bool isSensorInCappedSet(int sensorType);
+
+    // IchthysOS: sensor fingerprinting protection (kusti420/ichthysos-tracker#30).
+    // Third-party apps (app uids whose package isn't preinstalled on a system partition) get a
+    // generic sensor list without the uncalibrated sensors, a 50 Hz cap, and motion/pressure
+    // values quantized with a small per-connection random offset, so factory calibration can't
+    // be read out as a device fingerprint. Pushed from system_server's Java SensorService:
+    // Settings.Global ichthys_sensor_fingerprint_protection (default on) and per-user
+    // Settings.Secure ichthys_sensor_exempt_pkgs.
+    void setFingerprintProtection(bool enabled,
+            const std::vector<std::pair<userid_t, std::string>>& exemptions) ANDROID_API;
+    bool isFingerprintProtectedUid(uid_t uid);
+    // Types hidden from and refused to protected apps (raw bias / calibration data).
+    static bool isSensorFingerprintHidden(int sensorType);
+    // Types whose values are quantized and rate-capped for protected apps.
+    static bool isSensorFingerprintPerturbed(int sensorType);
+    // Quantization step, maximum random offset and number of value axes for a perturbed type.
+    static bool getFingerprintQuantization(int sensorType, float* quantum, float* maxOffset,
+            int* axes);
 
     virtual status_t shellCommand(int in, int out, int err, Vector<String16>& args);
 
@@ -528,6 +553,11 @@ private:
     void addSensorIfAccessible(const String16& opPackageName, const Sensor& sensor,
             Vector<Sensor>& accessibleSensorList);
     static bool hasPermissionForSensor(const Sensor& sensor);
+    // IchthysOS: the fingerprinting-protected view of one sensor-list entry. Returns false if
+    // the sensor must be hidden.
+    static bool hardenSensorForFingerprinting(Sensor& sensor);
+    // Package name of the uid and whether it's preinstalled; cached, may call package_native.
+    void lookupFingerprintUidInfo(uid_t uid, std::string* name, bool* isSystem);
     static int getTargetSdkVersion(const String16& opPackageName);
     static void resetTargetSdkVersionCache(const String16& opPackageName);
     // Checks if the provided target operating mode is valid and returns the enum if it is.
@@ -695,6 +725,14 @@ private:
     static AppOpsManager sAppOpsManager;
     static std::map<String16, int> sPackageTargetVersion;
     static Mutex sPackageTargetVersionLock;
+
+    // IchthysOS: sensor fingerprinting protection state; all guarded by mFingerprintLock.
+    Mutex mFingerprintLock;
+    bool mFingerprintProtection = true;
+    std::set<std::pair<userid_t, std::string>> mFingerprintExemptions;
+    // uid -> (package name, preinstalled). Preinstalled-ness doesn't depend on the settings, so
+    // this survives setFingerprintProtection().
+    std::unordered_map<uid_t, std::pair<std::string, bool>> mFingerprintUidInfo;
     static String16 sSensorInterfaceDescriptorPrefix;
 
     sp<MicrophonePrivacyPolicy> mMicSensorPrivacyPolicy;

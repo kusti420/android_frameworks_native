@@ -1577,8 +1577,14 @@ Vector<Sensor> SensorService::getSensorList(const String16& opPackageName) {
 
     resetTargetSdkVersionCache(opPackageName);
     bool isCapped = isRateCappedBasedOnPermission(opPackageName);
+    // IchthysOS: generic, calibration-free list for fingerprinting-protected apps.
+    const bool fingerprintProtected =
+            isFingerprintProtectedUid(IPCThreadState::self()->getCallingUid());
     for (size_t i = 0; i < initialSensorList.size(); i++) {
         Sensor sensor = initialSensorList[i];
+        if (fingerprintProtected && !hardenSensorForFingerprinting(sensor)) {
+            continue;
+        }
         if (isCapped && isSensorInCappedSet(sensor.getType())) {
             sensor.capMinDelayMicros(SENSOR_SERVICE_CAPPED_SAMPLING_PERIOD_NS / 1000);
             sensor.capHighestDirectReportRateLevel(SENSOR_SERVICE_CAPPED_SAMPLING_RATE_LEVEL);
@@ -1639,6 +1645,9 @@ sp<ISensorEventConnection> SensorService::createSensorEventConnection(const Stri
       return nullptr;
     }
     resetTargetSdkVersionCache(opPackageName);
+    // IchthysOS: resolve the caller's fingerprinting-protection state here, on the binder thread,
+    // so the sensor thread only hits the cache when it delivers events.
+    isFingerprintProtectedUid(IPCThreadState::self()->getCallingUid());
 
     Mutex::Autolock _l(mLock);
     // To create a client in DATA_INJECTION mode to inject data, SensorService should already be
@@ -2881,6 +2890,154 @@ bool SensorService::isSensorInCappedSet(int sensorType) {
             || sensorType == SENSOR_TYPE_GYROSCOPE_UNCALIBRATED
             || sensorType == SENSOR_TYPE_MAGNETIC_FIELD
             || sensorType == SENSOR_TYPE_MAGNETIC_FIELD_UNCALIBRATED);
+}
+
+bool SensorService::isSensorFingerprintHidden(int sensorType) {
+    return (sensorType == SENSOR_TYPE_ACCELEROMETER_UNCALIBRATED
+            || sensorType == SENSOR_TYPE_GYROSCOPE_UNCALIBRATED
+            || sensorType == SENSOR_TYPE_MAGNETIC_FIELD_UNCALIBRATED
+            || sensorType == SENSOR_TYPE_ACCELEROMETER_LIMITED_AXES_UNCALIBRATED
+            || sensorType == SENSOR_TYPE_GYROSCOPE_LIMITED_AXES_UNCALIBRATED);
+}
+
+bool SensorService::isSensorFingerprintPerturbed(int sensorType) {
+    float quantum, maxOffset;
+    int axes;
+    return getFingerprintQuantization(sensorType, &quantum, &maxOffset, &axes);
+}
+
+bool SensorService::getFingerprintQuantization(int sensorType, float* quantum, float* maxOffset,
+        int* axes) {
+    // Quantum: a few LSBs of typical phone IMUs. Rounding to it removes the per-unit gain
+    // (scale) calibration that research fingerprinting reads from the fine structure of values.
+    // Offset: a random per-connection bias well below what apps notice, so the per-unit bias
+    // can't be averaged out and linked across apps.
+    switch (sensorType) {
+        case SENSOR_TYPE_ACCELEROMETER:
+        case SENSOR_TYPE_ACCELEROMETER_LIMITED_AXES:
+            *quantum = 0.02f;     // m/s^2 (~2 mg)
+            *maxOffset = 0.02f;
+            *axes = 3;
+            return true;
+        case SENSOR_TYPE_GYROSCOPE:
+        case SENSOR_TYPE_GYROSCOPE_LIMITED_AXES:
+            *quantum = 0.002f;    // rad/s (~0.11 deg/s)
+            *maxOffset = 0.001f;  // small: integrated by apps into drift
+            *axes = 3;
+            return true;
+        case SENSOR_TYPE_MAGNETIC_FIELD:
+            *quantum = 0.25f;     // uT
+            *maxOffset = 0.5f;    // < 1 deg of compass heading
+            *axes = 3;
+            return true;
+        case SENSOR_TYPE_PRESSURE:
+            *quantum = 0.02f;     // hPa (~20 cm)
+            *maxOffset = 0.1f;    // ~1 m of altitude
+            *axes = 1;
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool SensorService::hardenSensorForFingerprinting(Sensor& sensor) {
+    const int type = sensor.getType();
+    if (isSensorFingerprintHidden(type)) {
+        return false;
+    }
+    if (isSensorFingerprintPerturbed(type)) {
+        sensor.capMinDelayMicros(ICHTHYS_FP_SAMPLING_PERIOD_NS / 1000);
+        // Direct channels bypass the event path (and with it the quantization), so none.
+        sensor.capHighestDirectReportRateLevel(SENSOR_DIRECT_RATE_STOP);
+    }
+    switch (type) {
+        case SENSOR_TYPE_ACCELEROMETER: sensor.anonymizeIdentity("Accelerometer"); break;
+        case SENSOR_TYPE_GYROSCOPE: sensor.anonymizeIdentity("Gyroscope"); break;
+        case SENSOR_TYPE_MAGNETIC_FIELD: sensor.anonymizeIdentity("Magnetometer"); break;
+        case SENSOR_TYPE_PRESSURE: sensor.anonymizeIdentity("Barometer"); break;
+        case SENSOR_TYPE_LIGHT: sensor.anonymizeIdentity("Light"); break;
+        case SENSOR_TYPE_PROXIMITY: sensor.anonymizeIdentity("Proximity"); break;
+        default: {
+            const String8 genericName = sensor.getStringType();
+            sensor.anonymizeIdentity(genericName.c_str());
+            break;
+        }
+    }
+    return true;
+}
+
+void SensorService::setFingerprintProtection(bool enabled,
+        const std::vector<std::pair<userid_t, std::string>>& exemptions) {
+    Mutex::Autolock _l(mFingerprintLock);
+    mFingerprintProtection = enabled;
+    mFingerprintExemptions =
+            std::set<std::pair<userid_t, std::string>>(exemptions.begin(), exemptions.end());
+    // The Java side pushes on package changes too; drop cached uid -> package mappings so a
+    // reused uid is looked up again.
+    mFingerprintUidInfo.clear();
+    ALOGI("Sensor fingerprinting protection %s, %zu exemption(s)",
+            enabled ? "on" : "off", mFingerprintExemptions.size());
+}
+
+void SensorService::lookupFingerprintUidInfo(uid_t uid, std::string* name, bool* isSystem) {
+    {
+        Mutex::Autolock _l(mFingerprintLock);
+        auto it = mFingerprintUidInfo.find(uid);
+        if (it != mFingerprintUidInfo.end()) {
+            *name = it->second.first;
+            *isSystem = it->second.second;
+            return;
+        }
+    }
+    name->clear();
+    *isSystem = false;
+    bool resolved = false;
+    {
+        // Ask as system_server, not as the (possibly package-visibility-filtered) caller.
+        AutoCallerClear acc;
+        sp<IBinder> binder = defaultServiceManager()->checkService(String16("package_native"));
+        sp<content::pm::IPackageManagerNative> packageManager = binder != nullptr
+                ? interface_cast<content::pm::IPackageManagerNative>(binder) : nullptr;
+        std::vector<std::string> names;
+        if (packageManager != nullptr &&
+                packageManager->getNamesForUids({static_cast<int32_t>(uid)}, &names).isOk()) {
+            resolved = true;
+            if (!names.empty()) {
+                *name = names[0];
+            }
+            int32_t flags = 0;
+            // Shared-uid names ("name:uid") and isolated uids don't resolve: not preinstalled.
+            if (!name->empty() && packageManager->getLocationFlags(*name, &flags).isOk()) {
+                *isSystem = flags != 0;
+            }
+        }
+    }
+    if (resolved) {
+        Mutex::Autolock _l(mFingerprintLock);
+        mFingerprintUidInfo[uid] = std::make_pair(*name, *isSystem);
+    }
+}
+
+bool SensorService::isFingerprintProtectedUid(uid_t uid) {
+    // System, native daemons and HAL clients are never affected.
+    if (multiuser_get_app_id(uid) < AID_APP_START) {
+        return false;
+    }
+    {
+        Mutex::Autolock _l(mFingerprintLock);
+        if (!mFingerprintProtection) {
+            return false;
+        }
+    }
+    std::string name;
+    bool isSystem = false;
+    lookupFingerprintUidInfo(uid, &name, &isSystem);
+    if (isSystem) {
+        return false;
+    }
+    Mutex::Autolock _l(mFingerprintLock);
+    return name.empty() ||
+            mFingerprintExemptions.count(std::make_pair(multiuser_get_user_id(uid), name)) == 0;
 }
 
 status_t SensorService::adjustSamplingPeriodBasedOnMicAndPermission(nsecs_t* requestedPeriodNs,

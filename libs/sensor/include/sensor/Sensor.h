@@ -103,6 +103,9 @@ public:
 
     void capMinDelayMicros(int32_t cappedMinDelay);
     void capHighestDirectReportRateLevel(int32_t cappedRateLevel);
+    // IchthysOS: replace the model-identifying name / vendor / version with generic values for
+    // apps under sensor fingerprinting protection (kusti420/ichthysos-tracker#30).
+    void anonymizeIdentity(const char* genericName);
 
     // LightFlattenable protocol
     inline bool isFixedSize() const { return false; }

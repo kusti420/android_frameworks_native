@@ -17,6 +17,7 @@
 #ifndef ANDROID_SENSOR_EVENT_CONNECTION_H
 #define ANDROID_SENSOR_EVENT_CONNECTION_H
 
+#include <array>
 #include <atomic>
 #include <optional>
 #include <stdint.h>
@@ -244,6 +245,15 @@ private:
     std::unordered_map<int, nsecs_t> mMicSamplingPeriodBackup
         GUARDED_BY(mConnectionLock);
     userid_t mUserId;
+
+    // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30), both protected by
+    // mConnectionLock. Per sensor handle: the random offset added before quantizing, and the
+    // timestamp of the last event delivered (for the 50 Hz cap when another client drives the
+    // sensor faster).
+    std::unordered_map<int32_t, std::array<float, 3>> mFingerprintOffsets;
+    std::unordered_map<int32_t, int64_t> mFingerprintLastTimestamp;
+    // Rate-limits and quantizes the events in place; returns the new count.
+    int hardenEventsForFingerprintingLocked(sensors_event_t* events, int count);
 
     std::optional<bool> mIsRateCappedBasedOnPermission;
 
