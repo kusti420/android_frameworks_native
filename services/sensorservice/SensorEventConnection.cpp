@@ -41,6 +41,10 @@ constexpr int kTargetSdkUnknown = 0;
 
 }  // namespace
 
+bool SensorService::SensorEventConnection::isFingerprintProtected() const {
+    return mService->isFingerprintProtected(mUid, mFingerprintName, mFingerprintSystem);
+}
+
 SensorService::SensorEventConnection::SensorEventConnection(
         const sp<SensorService>& service, uid_t uid, pid_t pid, String8 packageName,
         bool isDataInjectionMode, const String16& opPackageName, const String16& attributionTag)
@@ -403,7 +407,7 @@ status_t SensorService::SensorEventConnection::sendEvents(
     }
 
     // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30).
-    if (count > 0 && mService->isFingerprintProtectedUid(mUid)) {
+    if (count > 0 && isFingerprintProtected()) {
         if (scratch == buffer) {
             // scratch aliases the input shared by every connection; harden a private copy.
             sanitizedBuffer.reset(new sensors_event_t[count]);
@@ -779,7 +783,7 @@ status_t SensorService::SensorEventConnection::enableDisable(
                 isSensorCapped = true;
             }
             // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30).
-            if (mService->isFingerprintProtectedUid(mUid)) {
+            if (isFingerprintProtected()) {
                 if (SensorService::isSensorFingerprintHidden(s.getType())) {
                     return PERMISSION_DENIED;
                 }
@@ -835,7 +839,7 @@ status_t SensorService::SensorEventConnection::setEventRate(int handle, nsecs_t 
         // IchthysOS: fingerprinting protection 50 Hz cap (kusti420/ichthysos-tracker#30).
         if (SensorService::isSensorFingerprintPerturbed(s.getType()) &&
                 samplingPeriodNs < ICHTHYS_FP_SAMPLING_PERIOD_NS &&
-                mService->isFingerprintProtectedUid(mUid)) {
+                isFingerprintProtected()) {
             samplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
             requestedSamplingPeriodNs = ICHTHYS_FP_SAMPLING_PERIOD_NS;
         }

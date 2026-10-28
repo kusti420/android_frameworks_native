@@ -229,7 +229,11 @@ public:
     // Settings.Secure ichthys_sensor_exempt_pkgs.
     void setFingerprintProtection(bool enabled,
             const std::vector<std::pair<userid_t, std::string>>& exemptions) ANDROID_API;
+    // May ask package_native (binder): only for binder threads that hold no lock.
     bool isFingerprintProtectedUid(uid_t uid);
+    // The same answer for an app already looked up (lookupFingerprintUidInfo): no binder call, so
+    // the event path can ask it under its locks.
+    bool isFingerprintProtected(uid_t uid, const std::string& name, bool isSystem);
     // Types hidden from and refused to protected apps (raw bias / calibration data).
     static bool isSensorFingerprintHidden(int sensorType);
     // Types whose values are quantized and rate-capped for protected apps.

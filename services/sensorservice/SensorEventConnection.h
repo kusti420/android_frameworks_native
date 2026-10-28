@@ -20,6 +20,7 @@
 #include <array>
 #include <atomic>
 #include <optional>
+#include <string>
 #include <stdint.h>
 #include <sys/types.h>
 #include <unordered_map>
@@ -74,6 +75,12 @@ public:
 
     uid_t getUid() const { return mUid; }
     pid_t getPid() const { return mPid; }
+    // IchthysOS: the app's package and whether it's preinstalled, for fingerprinting protection;
+    // set once, right after the connection is made and before it gets events.
+    void setFingerprintIdentity(const std::string& name, bool isSystem) {
+        mFingerprintName = name;
+        mFingerprintSystem = isSystem;
+    }
     // cap/uncap existing connection depending on the state of the mic toggle.
     void onMicSensorAccessChanged(bool isMicToggleOn);
     void onSensorAccessChanged(bool hasAccess);
@@ -245,6 +252,12 @@ private:
     std::unordered_map<int, nsecs_t> mMicSamplingPeriodBackup
         GUARDED_BY(mConnectionLock);
     userid_t mUserId;
+
+    // IchthysOS: who the app is for fingerprinting protection (setFingerprintIdentity); unnamed
+    // stays protected. isFingerprintProtected() asks no binder, so it's safe under the locks.
+    std::string mFingerprintName;
+    bool mFingerprintSystem = false;
+    bool isFingerprintProtected() const;
 
     // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30), both protected by
     // mConnectionLock. Per sensor handle: the random offset added before quantizing, and the

@@ -1645,9 +1645,15 @@ sp<ISensorEventConnection> SensorService::createSensorEventConnection(const Stri
       return nullptr;
     }
     resetTargetSdkVersionCache(opPackageName);
-    // IchthysOS: resolve the caller's fingerprinting-protection state here, on the binder thread,
-    // so the sensor thread only hits the cache when it delivers events.
-    isFingerprintProtectedUid(IPCThreadState::self()->getCallingUid());
+    // IchthysOS: name the caller for fingerprinting protection here, on the binder thread before
+    // any lock; the connection keeps it, so delivering its events never asks package_native (the
+    // uid cache is dropped on every package change).
+    std::string fingerprintName;
+    bool fingerprintSystem = false;
+    const uid_t callingUid = IPCThreadState::self()->getCallingUid();
+    if (multiuser_get_app_id(callingUid) >= AID_APP_START) {
+        lookupFingerprintUidInfo(callingUid, &fingerprintName, &fingerprintSystem);
+    }
 
     Mutex::Autolock _l(mLock);
     // To create a client in DATA_INJECTION mode to inject data, SensorService should already be
@@ -1678,6 +1684,7 @@ sp<ISensorEventConnection> SensorService::createSensorEventConnection(const Stri
     sp<SensorEventConnection> result(new SensorEventConnection(this, uid, pid, connPackageName,
                                                                isInjectionMode(requestedMode),
                                                                connOpPackageName, attributionTag));
+    result->setFingerprintIdentity(fingerprintName, fingerprintSystem);
     if (isInjectionMode(requestedMode)) {
         mConnectionHolder.addEventConnectionIfNotPresent(result);
         // Add the associated file descriptor to the Looper for polling whenever there is data to
@@ -3036,10 +3043,18 @@ bool SensorService::isFingerprintProtectedUid(uid_t uid) {
     std::string name;
     bool isSystem = false;
     lookupFingerprintUidInfo(uid, &name, &isSystem);
-    if (isSystem) {
+    return isFingerprintProtected(uid, name, isSystem);
+}
+
+bool SensorService::isFingerprintProtected(uid_t uid, const std::string& name, bool isSystem) {
+    if (multiuser_get_app_id(uid) < AID_APP_START || isSystem) {
         return false;
     }
     Mutex::Autolock _l(mFingerprintLock);
+    if (!mFingerprintProtection) {
+        return false;
+    }
+    // An app whose package couldn't be named stays protected.
     return name.empty() ||
             mFingerprintExemptions.count(std::make_pair(multiuser_get_user_id(uid), name)) == 0;
 }
