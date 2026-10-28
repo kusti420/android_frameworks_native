@@ -2915,6 +2915,10 @@ bool SensorService::getFingerprintQuantization(int sensorType, float* quantum, f
     switch (sensorType) {
         case SENSOR_TYPE_ACCELEROMETER:
         case SENSOR_TYPE_ACCELEROMETER_LIMITED_AXES:
+        // IchthysOS: the fused gravity and linear acceleration add back up to the raw
+        // accelerometer, so they get its rounding (and cap) too.
+        case SENSOR_TYPE_GRAVITY:
+        case SENSOR_TYPE_LINEAR_ACCELERATION:
             *quantum = 0.02f;     // m/s^2 (~2 mg)
             *maxOffset = 0.02f;
             *axes = 3;
