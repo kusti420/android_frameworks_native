@@ -260,9 +260,9 @@ private:
     bool isFingerprintProtected() const;
 
     // IchthysOS: fingerprinting protection (kusti420/ichthysos-tracker#30), both protected by
-    // mConnectionLock. Per sensor handle: the random offset added before quantizing, and the
-    // timestamp of the last event delivered (for the 50 Hz cap when another client drives the
-    // sensor faster).
+    // mConnectionLock. Per sensor handle: the offset added before quantizing (the app's own, see
+    // SensorService::fingerprintOffset), and the timestamp of the last event delivered (for the
+    // 50 Hz cap when another client drives the sensor faster).
     std::unordered_map<int32_t, std::array<float, 3>> mFingerprintOffsets;
     std::unordered_map<int32_t, int64_t> mFingerprintLastTimestamp;
     // Rate-limits and quantizes the events in place; returns the new count.

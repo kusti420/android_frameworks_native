@@ -33,6 +33,7 @@
 #include <hardware/sensors.h>
 #include <hardware_legacy/power.h>
 #include <inttypes.h>
+#include <stdlib.h>
 #include <log/log.h>
 #include <math.h>
 #include <openssl/digest.h>
@@ -168,6 +169,7 @@ SensorService::SensorService()
     mUidPolicy = new UidPolicy(this);
     mSensorPrivacyPolicy = new SensorPrivacyPolicy(this);
     mMicSensorPrivacyPolicy = new MicrophonePrivacyPolicy(this);
+    arc4random_buf(&mFingerprintSecret, sizeof(mFingerprintSecret));
 }
 
 int SensorService::registerRuntimeSensor(
@@ -3044,6 +3046,21 @@ bool SensorService::isFingerprintProtectedUid(uid_t uid) {
     bool isSystem = false;
     lookupFingerprintUidInfo(uid, &name, &isSystem);
     return isFingerprintProtected(uid, name, isSystem);
+}
+
+float SensorService::fingerprintOffset(uid_t uid, int32_t handle, int axis,
+        float maxOffset) const {
+    // splitmix64 of the boot key and (uid, sensor, axis): not secret from the app, which only
+    // ever sees its own offsets, just stable for it and unrelated between apps.
+    uint64_t z = mFingerprintSecret ^ ((static_cast<uint64_t>(uid) << 32) ^
+            (static_cast<uint64_t>(static_cast<uint32_t>(handle)) << 2) ^
+            static_cast<uint64_t>(axis));
+    z += 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    z ^= z >> 31;
+    const float unit = static_cast<float>(z >> 40) / static_cast<float>(1ULL << 24);
+    return (unit * 2.0f - 1.0f) * maxOffset;
 }
 
 bool SensorService::isFingerprintProtected(uid_t uid, const std::string& name, bool isSystem) {

@@ -508,10 +508,8 @@ int SensorService::SensorEventConnection::hardenEventsForFingerprintingLocked(
         auto offsets = mFingerprintOffsets.find(e.sensor);
         if (offsets == mFingerprintOffsets.end()) {
             std::array<float, 3> generated;
-            for (float& offset : generated) {
-                const float unit =
-                        static_cast<float>(arc4random()) / static_cast<float>(UINT32_MAX);
-                offset = (unit * 2.0f - 1.0f) * maxOffset;
+            for (int axis = 0; axis < 3; axis++) {
+                generated[axis] = mService->fingerprintOffset(mUid, e.sensor, axis, maxOffset);
             }
             offsets = mFingerprintOffsets.emplace(e.sensor, generated).first;
         }

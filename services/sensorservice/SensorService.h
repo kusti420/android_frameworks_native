@@ -241,6 +241,10 @@ public:
     // Quantization step, maximum random offset and number of value axes for a perturbed type.
     static bool getFingerprintQuantization(int sensorType, float* quantum, float* maxOffset,
             int* axes);
+    // The offset added before quantizing one axis, in [-maxOffset, maxOffset]: random per boot,
+    // but the same for every connection of the app, so opening many connections can't average
+    // it out (different offsets would dither the quantization away).
+    float fingerprintOffset(uid_t uid, int32_t handle, int axis, float maxOffset) const;
 
     virtual status_t shellCommand(int in, int out, int err, Vector<String16>& args);
 
@@ -730,6 +734,8 @@ private:
     static std::map<String16, int> sPackageTargetVersion;
     static Mutex sPackageTargetVersionLock;
 
+    // IchthysOS: the per-boot key of fingerprintOffset(); set once in the constructor.
+    uint64_t mFingerprintSecret = 0;
     // IchthysOS: sensor fingerprinting protection state; all guarded by mFingerprintLock.
     Mutex mFingerprintLock;
     bool mFingerprintProtection = true;
