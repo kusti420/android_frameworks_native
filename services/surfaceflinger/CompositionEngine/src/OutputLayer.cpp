@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <string_view>
 #include "SkCanvas.h"
 #include "SkColorFilter.h"
 #include "SkImage.h"
@@ -756,6 +757,19 @@ void OutputLayer::writeOutputDependentGeometryStateToHWC(HWC2::Layer* hwcLayer,
               "%s (%d)",
               getLayerFE().getDebugName(), sourceCrop.left, sourceCrop.top, sourceCrop.right,
               sourceCrop.bottom, to_string(error).c_str(), static_cast<int32_t>(error));
+    }
+
+    // IchthysOS: frame-synced UDFPS mask HBM (Samsung optical fingerprint). SystemUI's mask window
+    // (title "UdfpsFodMask", the nits-matched dim shown while a finger is on the sensor) gets the
+    // Lineage "FOD pressed" bit in its Z. The composer (UDFPS_ZPOS) strips the bit again and sets
+    // the connector's fingerprint_mask in the same atomic commit, so the kernel switches the
+    // panel's mask HBM with exactly the frame that first shows / first drops the mask layer.
+    // Only that window carries the name, and SystemUI creates it only with
+    // persist.ichthys.udfps_sync on; every other layer is untouched.
+    static constexpr std::string_view kUdfpsMaskLayerPrefix = "UdfpsFodMask#";
+    static constexpr uint32_t kUdfpsPressedLayerZOrder = 0x20000000u;  // FOD_PRESSED_LAYER_ZORDER
+    if (std::string_view(getLayerFE().getDebugName()).starts_with(kUdfpsMaskLayerPrefix)) {
+        z |= kUdfpsPressedLayerZOrder;
     }
 
     if (auto error = hwcLayer->setZOrder(z); error != hal::Error::NONE) {
