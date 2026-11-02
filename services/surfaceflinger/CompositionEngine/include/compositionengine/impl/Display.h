@@ -113,6 +113,10 @@ private:
 
     DisplayIdVariant mIdVariant;
     bool mIsDisconnected = false;
+    // IchthysOS: UDFPS mask colour compensation (see Display::setColorTransform).
+    std::optional<mat4> mIchthysBaseColorTransform;
+    bool mIchthysUdfpsTinted = false;
+    mat4 mIchthysAppliedGains;
     adpf::PowerAdvisor* mPowerAdvisor = nullptr;
     int32_t mMaxLayerPictureProfiles = 0;
 };

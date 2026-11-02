@@ -15,6 +15,10 @@
  */
 
 #include <android-base/stringprintf.h>
+#include <sys/system_properties.h>
+
+#include <cstdio>
+#include <string_view>
 #include <common/trace.h>
 #include <compositionengine/CompositionEngine.h>
 #include <compositionengine/CompositionRefreshArgs.h>
@@ -110,15 +114,82 @@ void Display::disconnect() {
     }
 }
 
+namespace {
+// IchthysOS: per-channel gains "r g b" from persist.ichthys.udfps_rgb, applied to the whole
+// display only on frames that carry SystemUI's UDFPS mask layer ("VRI-UdfpsFodMask#N"). The
+// panel's fingerprint mask HBM uses other colour tables than the normal brightness range (its
+// white is greener); the matched dim fixes the light, these gains fix the colour, in the same
+// commit as the dim and the HBM. Unset or invalid = identity. Read through the property's serial,
+// so the per-frame cost is one atomic load.
+mat4 ichthysUdfpsGains() {
+    static const prop_info* info = nullptr;
+    static uint32_t lastSerial = 0;
+    static mat4 gains;
+    if (!info) {
+        info = __system_property_find("persist.ichthys.udfps_rgb");
+        if (!info) return mat4();
+        lastSerial = __system_property_serial(info) + 1;
+    }
+    const uint32_t serial = __system_property_serial(info);
+    if (serial != lastSerial) {
+        lastSerial = serial;
+        __system_property_read_callback(
+                info,
+                [](void* cookie, const char*, const char* value, uint32_t) {
+                    float r = 1.f, g = 1.f, b = 1.f;
+                    mat4 m;
+                    if (sscanf(value, "%f %f %f", &r, &g, &b) == 3 && r > 0.5f && r <= 1.f &&
+                        g > 0.5f && g <= 1.f && b > 0.5f && b <= 1.f) {
+                        m[0][0] = r;
+                        m[1][1] = g;
+                        m[2][2] = b;
+                    }
+                    *static_cast<mat4*>(cookie) = m;
+                },
+                &gains);
+    }
+    return gains;
+}
+
+bool ichthysHasUdfpsMask(const Output& output) {
+    for (const auto* layer : output.getOutputLayersOrderedByZ()) {
+        if (std::string_view(layer->getLayerFE().getDebugName()).find("UdfpsFodMask#") !=
+            std::string_view::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+} // namespace
+
 void Display::setColorTransform(const compositionengine::CompositionRefreshArgs& args) {
     Output::setColorTransform(args);
     const auto halDisplayId = getDisplayIdVariant().and_then(asHalDisplayId<DisplayIdVariant>);
-    if (mIsDisconnected || !halDisplayId || CC_LIKELY(!args.colorTransformMatrix)) {
+    if (mIsDisconnected || !halDisplayId) {
         return;
+    }
+    if (args.colorTransformMatrix) {
+        mIchthysBaseColorTransform = *args.colorTransformMatrix;
+    }
+    // IchthysOS: the UDFPS mask colour gains on top of the system's colour transform.
+    const mat4 gains = ichthysUdfpsGains();
+    const bool tint = gains != mat4() && ichthysHasUdfpsMask(*this);
+    const bool tintChanged =
+            tint != mIchthysUdfpsTinted || (tint && gains != mIchthysAppliedGains);
+    if (CC_LIKELY(!args.colorTransformMatrix && !tintChanged)) {
+        return;
+    }
+    const mat4 base = mIchthysBaseColorTransform.value_or(getState().colorTransformMatrix);
+    const mat4 effective = tint ? gains * base : base;
+    mIchthysUdfpsTinted = tint;
+    mIchthysAppliedGains = gains;
+    if (getState().colorTransformMatrix != effective) {
+        editState().colorTransformMatrix = effective;
+        dirtyEntireOutput();
     }
 
     auto& hwc = getCompositionEngine().getHwComposer();
-    status_t result = hwc.setColorTransform(*halDisplayId, *args.colorTransformMatrix);
+    status_t result = hwc.setColorTransform(*halDisplayId, effective);
     ALOGE_IF(result != NO_ERROR, "Failed to set color transform on display \"%s\": %d",
              to_string(*halDisplayId).c_str(), result);
 }
