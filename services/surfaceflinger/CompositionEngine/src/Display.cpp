@@ -184,8 +184,9 @@ void Display::setColorTransform(const compositionengine::CompositionRefreshArgs&
     mIchthysUdfpsTinted = tint;
     mIchthysAppliedGains = gains;
     if (getState().colorTransformMatrix != effective) {
-        editState().colorTransformMatrix = effective;
-        dirtyEntireOutput();
+        auto& state = editState();
+        state.colorTransformMatrix = effective;
+        state.dirtyRegion.set(state.displaySpace.getBoundsAsRect()); // as dirtyEntireOutput()
     }
 
     auto& hwc = getCompositionEngine().getHwComposer();
