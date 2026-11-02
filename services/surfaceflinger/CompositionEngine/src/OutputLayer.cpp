@@ -766,9 +766,12 @@ void OutputLayer::writeOutputDependentGeometryStateToHWC(HWC2::Layer* hwcLayer,
     // panel's mask HBM with exactly the frame that first shows / first drops the mask layer.
     // Only that window carries the name, and SystemUI creates it only with
     // persist.ichthys.udfps_sync on; every other layer is untouched.
-    static constexpr std::string_view kUdfpsMaskLayerPrefix = "UdfpsFodMask#";
+    // The window's buffer layer is named "VRI-UdfpsFodMask#<id>" (ViewRootImpl's BLAST surface),
+    // so the name is matched anywhere, not as a prefix (a prefix match never fired on device).
+    static constexpr std::string_view kUdfpsMaskLayerName = "UdfpsFodMask#";
     static constexpr uint32_t kUdfpsPressedLayerZOrder = 0x20000000u;  // FOD_PRESSED_LAYER_ZORDER
-    if (std::string_view(getLayerFE().getDebugName()).starts_with(kUdfpsMaskLayerPrefix)) {
+    if (std::string_view(getLayerFE().getDebugName()).find(kUdfpsMaskLayerName) !=
+        std::string_view::npos) {
         z |= kUdfpsPressedLayerZOrder;
     }
 
