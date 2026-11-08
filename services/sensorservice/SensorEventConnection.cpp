@@ -495,16 +495,33 @@ int SensorService::SensorEventConnection::hardenEventsForFingerprintingLocked(
         sensors_event_t& e = events[i];
         float quantum, maxOffset;
         int axes;
-        if (e.type == SENSOR_TYPE_META_DATA ||
-                !SensorService::getFingerprintQuantization(e.type, &quantum, &maxOffset, &axes)) {
+        if (e.type == SENSOR_TYPE_META_DATA) {
             events[out++] = e;
             continue;
         }
-        int64_t& last = mFingerprintLastTimestamp[e.sensor];
-        if (last != 0 && e.timestamp >= last && e.timestamp - last < kMinSpacingNs) {
+        // IchthysOS: additional-info frames carry the sensor's placement, internal temperature
+        // and calibration data, exactly what fingerprinting wants: none for protected apps.
+        if (e.type == SENSOR_TYPE_ADDITIONAL_INFO) {
             continue;
         }
-        last = e.timestamp;
+        const bool perturbed =
+                SensorService::getFingerprintQuantization(e.type, &quantum, &maxOffset, &axes);
+        if (perturbed) {
+            int64_t& last = mFingerprintLastTimestamp[e.sensor];
+            if (last != 0 && e.timestamp >= last && e.timestamp - last < kMinSpacingNs) {
+                continue;
+            }
+            last = e.timestamp;
+        }
+        // IchthysOS: the HAL's fine timing jitter is per-unit too; deliver timestamps on a
+        // coarse grid (rounded down, so they stay monotonic and never lie in the future).
+        if (e.timestamp > 0) {
+            e.timestamp -= e.timestamp % ICHTHYS_FP_TIMESTAMP_QUANTUM_NS;
+        }
+        if (!perturbed) {
+            events[out++] = e;
+            continue;
+        }
         auto offsets = mFingerprintOffsets.find(e.sensor);
         if (offsets == mFingerprintOffsets.end()) {
             std::array<float, 3> generated;
@@ -514,7 +531,14 @@ int SensorService::SensorEventConnection::hardenEventsForFingerprintingLocked(
             offsets = mFingerprintOffsets.emplace(e.sensor, generated).first;
         }
         for (int axis = 0; axis < axes; axis++) {
-            e.data[axis] = std::round((e.data[axis] + offsets->second[axis]) / quantum) * quantum;
+            // IchthysOS: fresh uniform dither of +-half a quantum per sample. Plain rounding
+            // maps the unit's ADC lattice onto the quantum grid in a fixed pattern (which bins
+            // fill, how often), from which the calibration gain can be read back; dither makes
+            // every bin's odds a smooth function of the true value.
+            const float dither = (static_cast<float>(arc4random() >> 8) /
+                    static_cast<float>(1u << 24) - 0.5f) * quantum;
+            e.data[axis] = std::round(
+                    (e.data[axis] + offsets->second[axis] + dither) / quantum) * quantum;
         }
         events[out++] = e;
     }

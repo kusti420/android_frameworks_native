@@ -81,6 +81,10 @@
 // pressure sensors (SENSOR_DELAY_GAME), regardless of HIGH_SAMPLING_RATE_SENSORS.
 // (kusti420/ichthysos-tracker#30)
 #define ICHTHYS_FP_SAMPLING_PERIOD_NS (20 * 1000 * 1000)
+// IchthysOS: event timestamps of protected apps are rounded down to this grid, coarse enough to
+// hide the HAL's microsecond timing jitter. Not the full 20 ms period: two events within one
+// period slot would get the same timestamp, and apps divide by the time delta.
+#define ICHTHYS_FP_TIMESTAMP_QUANTUM_NS (1000 * 1000)
 
 namespace android {
 

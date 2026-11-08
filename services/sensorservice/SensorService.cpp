@@ -1610,10 +1610,19 @@ void SensorService::addSensorIfAccessible(const String16& opPackageName, const S
 
 Vector<Sensor> SensorService::getDynamicSensorList(const String16& opPackageName) {
     Vector<Sensor> accessibleSensorList;
+    // IchthysOS: the same generic, calibration-free view as getSensorList() for
+    // fingerprinting-protected apps (asked here, on the binder thread, before any lock).
+    const bool fingerprintProtected =
+            isFingerprintProtectedUid(IPCThreadState::self()->getCallingUid());
     mSensors.forEachSensor(
-            [this, &opPackageName, &accessibleSensorList] (const Sensor& sensor) -> bool {
+            [this, &opPackageName, &accessibleSensorList, fingerprintProtected] (
+                    const Sensor& sensor) -> bool {
                 if (sensor.isDynamicSensor()) {
-                    addSensorIfAccessible(opPackageName, sensor, accessibleSensorList);
+                    Sensor visible = sensor;
+                    if (fingerprintProtected && !hardenSensorForFingerprinting(visible)) {
+                        return true;
+                    }
+                    addSensorIfAccessible(opPackageName, visible, accessibleSensorList);
                 }
                 return true;
             });
@@ -1623,11 +1632,18 @@ Vector<Sensor> SensorService::getDynamicSensorList(const String16& opPackageName
 
 Vector<Sensor> SensorService::getRuntimeSensorList(const String16& opPackageName, int deviceId) {
     Vector<Sensor> accessibleSensorList;
+    // IchthysOS: as getDynamicSensorList().
+    const bool fingerprintProtected =
+            isFingerprintProtectedUid(IPCThreadState::self()->getCallingUid());
     mSensors.forEachEntry(
-            [this, &opPackageName, deviceId, &accessibleSensorList] (
+            [this, &opPackageName, deviceId, &accessibleSensorList, fingerprintProtected] (
                     const SensorServiceUtil::SensorList::Entry& e) -> bool {
                 if (e.deviceId == deviceId) {
-                    addSensorIfAccessible(opPackageName, e.si->getSensor(), accessibleSensorList);
+                    Sensor visible = e.si->getSensor();
+                    if (fingerprintProtected && !hardenSensorForFingerprinting(visible)) {
+                        return true;
+                    }
+                    addSensorIfAccessible(opPackageName, visible, accessibleSensorList);
                 }
                 return true;
             });
@@ -2917,9 +2933,10 @@ bool SensorService::isSensorFingerprintPerturbed(int sensorType) {
 
 bool SensorService::getFingerprintQuantization(int sensorType, float* quantum, float* maxOffset,
         int* axes) {
-    // Quantum: a few LSBs of typical phone IMUs. Rounding to it removes the per-unit gain
-    // (scale) calibration that research fingerprinting reads from the fine structure of values.
-    // Offset: a random per-connection bias well below what apps notice, so the per-unit bias
+    // Quantum: 4-8 LSBs of typical phone IMUs (or more), applied with a fresh per-sample dither
+    // (hardenEventsForFingerprintingLocked). Rounding to it removes the per-unit gain (scale)
+    // calibration that research fingerprinting reads from the fine structure of values.
+    // Offset: a random per-app bias well below what apps notice, so the per-unit bias
     // can't be averaged out and linked across apps.
     switch (sensorType) {
         case SENSOR_TYPE_ACCELEROMETER:
@@ -2928,18 +2945,18 @@ bool SensorService::getFingerprintQuantization(int sensorType, float* quantum, f
         // accelerometer, so they get its rounding (and cap) too.
         case SENSOR_TYPE_GRAVITY:
         case SENSOR_TYPE_LINEAR_ACCELERATION:
-            *quantum = 0.02f;     // m/s^2 (~2 mg)
+            *quantum = 0.03f;     // m/s^2 (~3 mg; 6 LSB at +-16 g, 12 at +-8 g)
             *maxOffset = 0.02f;
             *axes = 3;
             return true;
         case SENSOR_TYPE_GYROSCOPE:
         case SENSOR_TYPE_GYROSCOPE_LIMITED_AXES:
-            *quantum = 0.002f;    // rad/s (~0.11 deg/s)
+            *quantum = 0.006f;    // rad/s (~0.34 deg/s; ~5 LSB at +-2000 dps)
             *maxOffset = 0.001f;  // small: integrated by apps into drift
             *axes = 3;
             return true;
         case SENSOR_TYPE_MAGNETIC_FIELD:
-            *quantum = 0.25f;     // uT
+            *quantum = 0.75f;     // uT (5 LSB of a 0.15 uT magnetometer)
             *maxOffset = 0.5f;    // < 1 deg of compass heading
             *axes = 3;
             return true;
